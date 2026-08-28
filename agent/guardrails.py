@@ -177,7 +177,10 @@ def scan_for_injected_instructions(text: str) -> InjectionScanResult:
     file's own `__main__` demo below, which runs an unambiguous injection
     attempt through this exact function and shows it sailing through
     uncaught. That gap is the assignment, not a bug report."""
-    return InjectionScanResult(suspicious=False, matched_patterns=())
+    if not isinstance(text, str) or not text:
+        return InjectionScanResult(False, ())
+    matched = tuple(pattern for pattern in _INJECTION_PATTERNS if re.search(pattern, text, re.I))
+    return InjectionScanResult(bool(matched), matched)
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +208,21 @@ def redact(text: str) -> RedactionResult:
 
     This starter's version does not look at `text` at all — see this
     file's own `__main__` demo below."""
-    return RedactionResult(redacted_text=text, hits=())
+    if not isinstance(text, str) or not text:
+        return RedactionResult(text, ())
+    hits: list[str] = []
+    replacements: list[tuple[int, int, str]] = []
+    for pattern in (_PRIVATE_MARKER_RE, _LEARNER_PRIVATE_RE):
+        for match in re.finditer(pattern, text):
+            value = match.group(1) if match.lastindex else match.group(0)
+            if len(re.sub(r"\s+", " ", value).strip()) >= 40:
+                hits.append(value)
+                replacements.append((match.start(1) if match.lastindex else match.start(),
+                                     match.end(1) if match.lastindex else match.end(), "[REDACTED]"))
+    result = text
+    for start, end, replacement in sorted(replacements, reverse=True):
+        result = result[:start] + replacement + result[end:]
+    return RedactionResult(result, tuple(dict.fromkeys(hits)))
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +238,18 @@ class ArithmeticCheckResult:
 
 
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
+_INJECTION_PATTERNS = (
+    r"\bignore\s+(?:all\s+)?previous\s+instructions?\b",
+    r"\b(?:system|developer)\s+override\b",
+    r"\bdisregard\s+(?:the|all)\s+(?:above|instructions?)\b",
+    r"\byou\s+must\s+now\b",
+    r"\b(?:reveal|report|print)\s+(?:the\s+)?(?:act|scopes?|private|secret|learner)",
+    r"\b(?:bỏ qua|bỏ mặc)\s+(?:mọi\s+)?hướng dẫn",
+)
+_PRIVATE_MARKER_RE = re.compile(
+    r"(?im)(?:private|confidential|personal)\s+(?:note|field|content)\s*[:\-]\s*(.{40,})"
+)
+_LEARNER_PRIVATE_RE = re.compile(r"(?im)(Learner:[\w-]+[^.\n]{0,120}(?:private|confidential)[^.\n]{40,})")
 
 
 def verify_arithmetic(text: str) -> ArithmeticCheckResult:
@@ -238,9 +267,19 @@ def verify_arithmetic(text: str) -> ArithmeticCheckResult:
     This starter's version does not look at `text` at all beyond what
     `_NUMBER_RE` would find if you called it (it isn't called) — see this
     file's own `__main__` demo below."""
-    return ArithmeticCheckResult(
-        checked=False, ok=None, detail="verify_arithmetic is a stub — no check was performed"
+    if not isinstance(text, str) or not text:
+        return ArithmeticCheckResult(False, None, "no numeric expression found")
+    expressions = re.findall(
+        r"(-?\d+(?:\.\d+)?)\s*([+*/-])\s*(-?\d+(?:\.\d+)?)\s*=\s*(-?\d+(?:\.\d+)?)", text
     )
+    if not expressions:
+        return ArithmeticCheckResult(False, None, "no explicit arithmetic expression found")
+    for left, op, right, claimed in expressions:
+        a, b, expected = float(left), float(right), float(claimed)
+        actual = {"+": a + b, "-": a - b, "*": a * b, "/": a / b if b else float("nan")}[op]
+        if actual != expected:
+            return ArithmeticCheckResult(True, False, f"{left} {op} {right} = {claimed} (actual {actual:g})")
+    return ArithmeticCheckResult(True, True, "all explicit arithmetic expressions verified")
 
 
 # ---------------------------------------------------------------------------
